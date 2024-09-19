@@ -1,0 +1,430 @@
+{
+	"name": "nb_loadfromFile",
+	"properties": {
+		"nbformat": 4,
+		"nbformat_minor": 2,
+		"sessionProperties": {
+			"driverMemory": "28g",
+			"driverCores": 4,
+			"executorMemory": "28g",
+			"executorCores": 4,
+			"numExecutors": 2,
+			"conf": {
+				"spark.dynamicAllocation.enabled": "false",
+				"spark.dynamicAllocation.minExecutors": "2",
+				"spark.dynamicAllocation.maxExecutors": "2",
+				"spark.autotune.trackingId": "e4ec748c-932a-4a1b-b5de-a71c4970c447"
+			}
+		},
+		"metadata": {
+			"saveOutput": true,
+			"enableDebugMode": false,
+			"kernelspec": {
+				"name": "synapse_pyspark",
+				"display_name": "Synapse PySpark"
+			},
+			"language_info": {
+				"name": "python"
+			},
+			"sessionKeepAliveTimeout": 30
+		},
+		"cells": [
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"### nb_LoadFromRawFolderToDataVault\r\n",
+					"\r\n",
+					"#### This notebooks takes three parameters and gets the parquet files in the legacy/RAW/ location of the source system name folder and recursively creates files in the zonedatavault/databasename parameter and tables in the db_name database in the Lake Database.\r\n",
+					"\r\n",
+					"##### For instance, passing in \r\n",
+					"- ##### db_name = CDE_Analytics\r\n",
+					"- ##### source_system_name = Anico\r\n",
+					"- ##### staging_folder_name = non_logic\r\n",
+					"\r\n",
+					"##### will result in the parquet files in the Anico/non_logic folder being moved to the CDE_Analytics folder on the zonedatavault container and tables created in the CDE_Analytics lake database.  Leaving the staging_folder_name blank will result in getting all subfolders in the source_system_name_folder\r\n",
+					""
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					},
+					"tags": [
+						"parameters"
+					]
+				},
+				"source": [
+					"db_name = \"CDEAnalytics\"\r\n",
+					"presentation_db_name = 'anico'\r\n",
+					"source_system_name = 'Anico'\r\n",
+					"staging_raw_folder = 'non_logic'"
+				],
+				"execution_count": 56
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"spark.conf.set('spark.sql.legacy.parquet.int96RebaseModeInRead', 'CORRECTED')\r\n",
+					"spark.conf.set('spark.sql.legacy.parquet.int96RebaseModeInWrite', 'CORRECTED')\r\n",
+					"spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInRead', 'CORRECTED')\r\n",
+					"spark.conf.set('spark.sql.legacy.parquet.datetimeRebaseModeInWrite', 'CORRECTED')"
+				],
+				"execution_count": 57
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### using the etlcontrol.Source table get the SourceSystemKey value for inserting into datavault"
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"source_info = spark.sql(f\"SELECT SourceSystemKey FROM etlcontrol.Source WHERE SourceName = '{source_system_name}'\").collect()\r\n",
+					"source_system_id = source_info[0].SourceSystemKey"
+				],
+				"execution_count": 58
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"#FOR TESTING \r\n",
+					"sqlQuery = \"DROP DATABASE CDEAnalytics_test0918 CASCADE\"\r\n",
+					"spark.sql(sqlQuery)"
+				],
+				"execution_count": 67
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### required libraries for notebook functions   "
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"import json\r\n",
+					"from pyspark.sql.functions import *\r\n",
+					"import pandas as pd\r\n",
+					"from notebookutils import mssparkutils"
+				],
+				"execution_count": 60
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### function to get all file names recursively for provided path"
+				]
+			},
+			{
+				"cell_type": "code",
+				"source": [
+					"def deep_ls(path: str, max_depth=1):\r\n",
+					"    \"\"\"\r\n",
+					"    List all files and folders in specified path and\r\n",
+					"    subfolders within maximum recursion depth.\r\n",
+					"    \"\"\"\r\n",
+					"\r\n",
+					"    # List all files in path and apply sorting rules\r\n",
+					"    li = mssparkutils.fs.ls(path)\r\n",
+					"\r\n",
+					"    # Return all files\r\n",
+					"    for x in li:\r\n",
+					"        if x.size != 0:\r\n",
+					"            yield x\r\n",
+					"\r\n",
+					"    # If the max_depth has not been reached, start\r\n",
+					"    # listing files and folders in subdirectories\r\n",
+					"    if max_depth > 1:\r\n",
+					"        for x in li:\r\n",
+					"            if x.size != 0:\r\n",
+					"                continue\r\n",
+					"            for y in deep_ls(x.path, max_depth - 1):\r\n",
+					"                yield y\r\n",
+					"\r\n",
+					"    # If max_depth has been reached,\r\n",
+					"    # return the folders\r\n",
+					"    else:\r\n",
+					"        for x in li:\r\n",
+					"            if x.size == 0:\r\n",
+					"                yield x\r\n",
+					"                \r\n",
+					"def convertfiles2df(files):\r\n",
+					"    \"\"\"\r\n",
+					"    Converts FileInfo object into Pandas DataFrame to enable display\r\n",
+					"    \"\"\"\r\n",
+					"    # Disable Arrow-based transfers since the Pandas DataFrame is tiny\r\n",
+					"    spark.conf.set(\"spark.sql.execution.arrow.enabled\", \"false\")\r\n",
+					"\r\n",
+					"    schema = ['path','name','size']\r\n",
+					"    df = pd.DataFrame([[getattr(i,j) for j in schema] for i in files], columns = schema).sort_values('path')\r\n",
+					"    return(df)"
+				],
+				"execution_count": 61
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### get credentails and information about linked services for connection string to process files"
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"CredentialProperties = mssparkutils.credentials.getPropertiesAll(\"sp_core_raw_legacy_internal_rw\")\r\n",
+					"CredentialProperties = json.loads(CredentialProperties)\r\n",
+					"raw_storageLocation = CredentialProperties['Endpoint'].replace('https://', '')\r\n",
+					"raw_storageContainer = \"legacy\"\r\n",
+					"\r\n",
+					"CredentialProperties = mssparkutils.credentials.getPropertiesAll(\"sp_core_vlt_zonedatavault_internal_rw\")\r\n",
+					"CredentialProperties = json.loads(CredentialProperties)\r\n",
+					"staging_storageLocation = CredentialProperties['Endpoint'].replace('https://', '')\r\n",
+					"staging_storageContainer = \"zonedatavault\"\r\n",
+					"\r\n",
+					"CredentialProperties = mssparkutils.credentials.getPropertiesAll(\"sp_core_pub_zonepublished_internal_rw\")\r\n",
+					"CredentialProperties = json.loads(CredentialProperties)\r\n",
+					"presentation_storageLocation = CredentialProperties['Endpoint'].replace('https://', '')\r\n",
+					"presentation_storageContainer = \"zonepublished\"\r\n",
+					"\r\n",
+					"print(f\"{raw_storageLocation} and {raw_storageContainer}\")\r\n",
+					"print(f\"{staging_storageLocation} and {staging_storageContainer}\")\r\n",
+					"print(f\"{presentation_storageLocation} and {presentation_storageContainer}\")\r\n",
+					"\r\n",
+					"rootpath = f\"abfss://{raw_storageContainer}@{raw_storageLocation}RAW/{source_system_name}/{staging_raw_folder}\"\r\n",
+					"print(rootpath)"
+				],
+				"execution_count": 62
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### Execute the function to get the files in the RAW folders"
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					},
+					"collapsed": false
+				},
+				"source": [
+					"files = list(deep_ls(rootpath, max_depth=20))\r\n",
+					"\r\n",
+					"df_file = convertfiles2df(files)\r\n",
+					""
+				],
+				"execution_count": 63
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					},
+					"collapsed": false
+				},
+				"source": [
+					"#display(df_file)"
+				],
+				"execution_count": 64
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### create the database in the lake database if it doesn't exist"
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"sqlQuery =  f\"CREATE DATABASE IF NOT EXISTS {db_name} LOCATION 'abfss://{staging_storageContainer}@{staging_storageLocation}{db_name}'\"\r\n",
+					"#print(sqlQuery)\r\n",
+					"\r\n",
+					"spark.sql(sqlQuery)"
+				],
+				"execution_count": 65
+			},
+			{
+				"cell_type": "markdown",
+				"metadata": {
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"###### For each file returned by the fuction; load to a data frame, add Source and load information, save as a table to the db_name and datavault folder"
+				]
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"for ind in df_file.index:\r\n",
+					"    print(df_file['path'][ind])\r\n",
+					"    staging_table_name = df_file['name'][ind].replace('.parquet', '').lower()\r\n",
+					"    staging_folder_name = f\"abfss://{staging_storageContainer}@{staging_storageLocation}{db_name}/{staging_table_name}/\"\r\n",
+					"    presentation_folder_name = f\"abfss://{presentation_storageContainer}@{presentation_storageLocation}{presentation_db_name.upper()}/{staging_table_name}/\"\r\n",
+					"    \r\n",
+					"    print(staging_folder_name)\r\n",
+					"    print(presentation_folder_name)\r\n",
+					"    df_filename = spark.read.parquet(df_file['path'][ind])\r\n",
+					"    df_filename = df_filename.withColumn('SourceSystemName', lit(staging_raw_folder))\r\n",
+					"    df_filename = df_filename.withColumn('SourceSystemKey', expr(f\"cast({source_system_id} as Integer)\"))\r\n",
+					"    df_filename = df_filename.withColumn('LoadDateTime', expr(\"CURRENT_TIMESTAMP\"))\r\n",
+					"    df_filename.write.option(\"path\", staging_folder_name).mode('overwrite').format('parquet').saveAsTable(f\"{db_name}.{staging_table_name}\")\r\n",
+					"    df_filename.write.option(\"path\", presentation_folder_name).mode('overwrite').format('parquet').saveAsTable(f\"{presentation_db_name}.{staging_table_name}\")"
+				],
+				"execution_count": 66
+			}
+		]
+	}
+}
