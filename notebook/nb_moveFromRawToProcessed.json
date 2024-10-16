@@ -17,7 +17,7 @@
 				"spark.dynamicAllocation.enabled": "false",
 				"spark.dynamicAllocation.minExecutors": "2",
 				"spark.dynamicAllocation.maxExecutors": "2",
-				"spark.autotune.trackingId": "04d3674b-f69e-43e4-b3aa-7a827c60d233"
+				"spark.autotune.trackingId": "e7031728-246e-48e9-ae39-99d4f1b4b44c"
 			}
 		},
 		"metadata": {
@@ -67,19 +67,182 @@
 					"import pandas as pd\r\n",
 					"from notebookutils import mssparkutils"
 				],
-				"execution_count": 2
+				"execution_count": 45
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"def deep_ls(path: str, max_depth=1):\r\n",
+					"    \"\"\"\r\n",
+					"    List all files and folders in specified path and\r\n",
+					"    subfolders within maximum recursion depth.\r\n",
+					"    \"\"\"\r\n",
+					"\r\n",
+					"    # List all files in path and apply sorting rules\r\n",
+					"    li = mssparkutils.fs.ls(path)\r\n",
+					"\r\n",
+					"    # Return all files\r\n",
+					"    for x in li:\r\n",
+					"        if x.size != 0:\r\n",
+					"            yield x\r\n",
+					"\r\n",
+					"    # If the max_depth has not been reached, start\r\n",
+					"    # listing files and folders in subdirectories\r\n",
+					"    if max_depth > 1:\r\n",
+					"        for x in li:\r\n",
+					"            if x.size != 0:\r\n",
+					"                continue\r\n",
+					"            for y in deep_ls(x.path, max_depth - 1):\r\n",
+					"                yield y\r\n",
+					"\r\n",
+					"    # If max_depth has been reached,\r\n",
+					"    # return the folders\r\n",
+					"    else:\r\n",
+					"        for x in li:\r\n",
+					"            if x.size == 0:\r\n",
+					"                yield x\r\n",
+					"                \r\n",
+					"def convertfiles2df(files):\r\n",
+					"    \"\"\"\r\n",
+					"    Converts FileInfo object into Pandas DataFrame to enable display\r\n",
+					"    \"\"\"\r\n",
+					"    # Disable Arrow-based transfers since the Pandas DataFrame is tiny\r\n",
+					"    spark.conf.set(\"spark.sql.execution.arrow.enabled\", \"false\")\r\n",
+					"\r\n",
+					"    schema = ['path','name','size']\r\n",
+					"    df = pd.DataFrame([[getattr(i,j) for j in schema] for i in files], columns = schema).sort_values('path')\r\n",
+					"    return(df)"
+				],
+				"execution_count": 46
 			},
 			{
 				"cell_type": "code",
 				"source": [
 					"CredentialProperties = mssparkutils.credentials.getPropertiesAll(\"lgasampledev-WorkspaceDefaultStorage\")\r\n",
 					"CredentialProperties = json.loads(CredentialProperties)\r\n",
-					"raw_storageLocation = CredentialProperties['Endpoint'].replace('https://', '')\r\n",
-					"raw_storageContainer = \"lgafsdev\"\r\n",
+					"storageLocation = CredentialProperties['Endpoint'].replace('https://', '')\r\n",
+					"storageContainer = \"lgafsdev\"\r\n",
 					"\r\n",
-					"print(raw_storageLocation)"
+					"print(storageLocation)\r\n",
+					"raw_location = f\"abfss://{storageContainer}@{storageLocation}/raw_data\"\r\n",
+					"print(raw_location)\r\n",
+					"\r\n",
+					"processed_location = f\"abfss://{storageContainer}@{storageLocation}/processed_data\"\r\n",
+					"print(processed_location)"
 				],
-				"execution_count": 5
+				"execution_count": 47
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"db_name = \"TaxiData\""
+				],
+				"execution_count": 48
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"files = list(deep_ls(raw_location, max_depth=20))\r\n",
+					"\r\n",
+					"df_file = convertfiles2df(files)"
+				],
+				"execution_count": 49
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					},
+					"collapsed": false
+				},
+				"source": [
+					"display(df_file)"
+				],
+				"execution_count": 50
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					}
+				},
+				"source": [
+					"sqlQuery =  f\"CREATE DATABASE IF NOT EXISTS TaxiData LOCATION 'abfss://lgafsdev@lgasynadlsdev.dfs.core.windows.net/TaxiData'\"\r\n",
+					"#print(sqlQuery)\r\n",
+					"\r\n",
+					"spark.sql(sqlQuery)"
+				],
+				"execution_count": 51
+			},
+			{
+				"cell_type": "code",
+				"metadata": {
+					"jupyter": {
+						"source_hidden": false,
+						"outputs_hidden": false
+					},
+					"nteract": {
+						"transient": {
+							"deleting": false
+						}
+					},
+					"collapsed": false
+				},
+				"source": [
+					"for ind in df_file.index:\r\n",
+					"    staging_table_name = df_file['name'][ind].replace('.parquet', '').replace('-','_').lower()\r\n",
+					"    df_filename = spark.read.parquet(df_file['path'][ind])\r\n",
+					"    display(df_filename)\r\n",
+					"    df_filename.write.option(\"path\", f\"{processed_location}/{staging_table_name}/\").mode('overwrite').format('parquet').saveAsTable(f\"{db_name}.{staging_table_name}\")"
+				],
+				"execution_count": 52
 			}
 		]
 	}
